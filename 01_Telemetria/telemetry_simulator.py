@@ -4,12 +4,13 @@ from typing import List, Dict
 
 
 class TelemetrySimulator:
+
     def __init__(self, car: Dict, setup: Dict, track_points: List[Dict]):
 
         # ===== DATOS DEL COCHE =====
         self.mass = setup['mass']
-        self.engine_power_hp = setup['engine_power']   # HP
-        self.max_speed = setup['max_speed'] / 3.6      # m/s
+        self.engine_power_hp = setup['engine_power']
+        self.max_speed = setup['max_speed'] / 3.6
         self.max_rpm = setup['max_rpm']
         self.idle_rpm = setup['idle_rpm']
 
@@ -31,8 +32,15 @@ class TelemetrySimulator:
         self.final_drive = setup['final_drive']
 
         # ===== ESTADO DINÁMICO =====
-        self.velocity = 0.0
-        self.acceleration = 0.0
+        self.velocity = 0.0              # longitudinal
+        self.acceleration = 0.0          # longitudinal
+
+        self.accel_x = 0.0
+        self.accel_y = 0.0
+        self.accel_z = 0.0
+
+        self.yaw = 0.0
+        self.yaw_rate = 0.0
 
         self.gear = 1
         self.rpm = self.idle_rpm
@@ -55,71 +63,74 @@ class TelemetrySimulator:
     # =========================================================
 
     def update(self, delta_time: float = 0.1):
+
         self.time_total += delta_time
 
-        # === PUNTOS DE PISTA ===
         n = len(self.track_points)
         idx = self.track_point_index
+
         p_prev = self.track_points[(idx - 1) % n]
         p_curr = self.track_points[idx]
         p_next = self.track_points[(idx + 1) % n]
 
-        # === GEOMETRÍA DE CURVA ===
+        # ===== GEOMETRÍA =====
         radius = self._calculate_radius(p_prev, p_curr, p_next)
         dist_between = self._distance(p_curr, p_next)
 
-        # === GRIP EFECTIVO CON BANKING ===
-        banking_rad = math.radians(p_curr.get('banking', 0.0))
-        grip_base = p_curr.get('grip', 1.0)
-        grip_efectivo = grip_base * (1 + math.sin(banking_rad))
-
-        # === FUERZA NORMAL (peso + downforce) ===
-        normal_force = self.mass * 9.81 + self.downforce_coefficient * self.velocity**2
-
-        # === ACELERACIÓN LATERAL MÁXIMA ===
-        max_lat_accel = grip_efectivo * normal_force / self.mass
-
-        # === VELOCIDAD MÁXIMA FÍSICA EN CURVA ===
+        # ===== ACELERACIÓN LATERAL (2D REAL) =====
         if radius == float('inf'):
-            max_curve_speed = self.max_speed
+            self.accel_y = 0.0
+            self.yaw_rate = 0.0
         else:
-            max_curve_speed = math.sqrt(max_lat_accel * radius)
+            self.accel_y = (self.velocity ** 2) / radius
+            self.yaw_rate = self.velocity / radius
 
-        # === VELOCIDAD OBJETIVO (TRAZADA PERFECTA) ===
-        desired_speed = min(max_curve_speed, self.max_speed)
+        self.yaw += self.yaw_rate * delta_time
 
-        # =====================================================
-        # CONTROL AUTOMÁTICO DE GAS Y FRENO (CLAVE)
-        # =====================================================
+        # ===== GRIP =====
+        normal_force = self.mass * 9.81 + self.downforce_coefficient * self.velocity ** 2
+        max_lat_accel = self.tire_grip * normal_force / self.mass
+
+        if radius == float('inf'):
+            desired_speed = self.max_speed
+        else:
+            desired_speed = min(math.sqrt(max_lat_accel * radius), self.max_speed)
+
+        # ===== CONTROL GAS / FRENO =====
         speed_error = desired_speed - self.velocity
 
         if speed_error > 0.5:
-            # Necesitamos acelerar
             self.throttle = min(speed_error / desired_speed, 1.0)
             self.brake = 0.0
         elif speed_error < -0.5:
-            # Necesitamos frenar
             self.throttle = 0.0
             self.brake = min(abs(speed_error) / desired_speed, 1.0)
         else:
-            # Mantener velocidad
             self.throttle = 0.0
             self.brake = 0.0
 
-        # === FUERZAS ===
+        # ===== FUERZAS =====
         engine_force = self._engine_force()
         brake_force = self.max_brake_force * self.brake
-        rolling_resistance = self._friction_force()
-        drag_force = 0.5 * self.air_density * self.frontal_area * self.drag_coefficient * self.velocity**2
+        rolling = self._friction_force()
+        drag = 0.5 * self.air_density * self.frontal_area * self.drag_coefficient * self.velocity ** 2
 
-        total_force = engine_force - brake_force - rolling_resistance - drag_force
+        total_force = engine_force - brake_force - rolling - drag
 
-        # === DINÁMICA LONGITUDINAL ===
+        # ===== CÍRCULO DE FRICCIÓN (LONG + LAT) =====
+        lat_ratio = abs(self.accel_y) / max_lat_accel if max_lat_accel > 0 else 0.0
+        grip_factor = max(0.0, 1.0 - lat_ratio ** 2)
+
+        total_force *= grip_factor
+
+        # ===== DINÁMICA LONGITUDINAL =====
         self.acceleration = total_force / self.mass
+        self.accel_x = self.acceleration
+
         self.velocity += self.acceleration * delta_time
         self.velocity = max(0.0, min(self.velocity, self.max_speed))
 
-        # === AVANCE SOBRE LA PISTA ===
+        # ===== AVANCE =====
         move_dist = self.velocity * delta_time
         self.current_distance += move_dist
 
@@ -131,26 +142,17 @@ class TelemetrySimulator:
                 self.lap_count += 1
                 self.current_distance = 0.0
 
-            idx = self.track_point_index
-            p_curr = self.track_points[idx]
-            p_next = self.track_points[(idx + 1) % n]
+            p_curr = self.track_points[self.track_point_index]
+            p_next = self.track_points[(self.track_point_index + 1) % n]
             dist_between = self._distance(p_curr, p_next)
 
-        # === INTERPOLACIÓN DE POSICIÓN ===
         ratio = move_dist / dist_between if dist_between > 0 else 0.0
+
         self.pos_x = p_curr['x'] + ratio * (p_next['x'] - p_curr['x'])
         self.pos_y = p_curr['y'] + ratio * (p_next['y'] - p_curr['y'])
         self.pos_z = p_curr['z'] + ratio * (p_next['z'] - p_curr['z'])
 
-        # === ORIENTACIÓN ===
-        self.heading = math.atan2(
-            p_next['y'] - p_curr['y'],
-            p_next['x'] - p_curr['x']
-        )
-
-        lap_time = 0.0
-        return self._get_telemetry_data(self.time_total, lap_time)
-
+        return self._get_telemetry_data(self.time_total, 0.0)
     # =========================================================
 
     def _engine_force(self):
