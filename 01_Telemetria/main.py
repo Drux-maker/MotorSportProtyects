@@ -53,7 +53,7 @@ def run_simulation(duration: float = 60.0, sample_rate: float = 10.0,
     # Obtener el coche y el setup seleccionado
     cursor.execute("SELECT * FROM cars WHERE car_id = %s", (car_id,))
     car = cursor.fetchone()
-    cursor.execute("SELECT * FROM car_setups WHERE car_id = %s", (car_id,))
+    cursor.execute("SELECT * FROM car_setup WHERE car_id = %s", (car_id,))
     setup = cursor.fetchone()
 
     # Obtener el circuito y sus puntos seleccionado
@@ -79,7 +79,7 @@ def run_simulation(duration: float = 60.0, sample_rate: float = 10.0,
     print(f"\nIniciando simulación...\n")
 
     # Crear simulador (pasamos los datos de la bbdd al simulador) y logger (guarda CSV/JSON)
-    simulator = TelemetrySimulator(car, setup, circuit, track_points)
+    simulator = TelemetrySimulator(car, setup, track_points)
     logger = DataLogger(output_dir=output_dir)
 
     # Intervalo entre muestras: si sample_rate=10 Hz, sample_interval=0.1 s
@@ -107,11 +107,11 @@ def run_simulation(duration: float = 60.0, sample_rate: float = 10.0,
 
             # Cada segundo (cada sample_rate muestras) imprimir resumen en consola
             if sample_count % int(sample_rate) == 0:
-                print(f"Tiempo: {elapsed:.1f}s | "
-                      f"Velocidad: {data['speed_kmh']:.1f} km/h | "
-                      f"RPM: {data['rpm']:.0f} | "
+                print(f"Tiempo: {elapsed}s | "
+                      f"Velocidad: {data['speed_kmh']} km/h | "
+                      f"RPM: {data['rpm']} | "
                       f"Vuelta: {data['lap_count']} | "
-                      f"Combustible: {data['fuel_level']:.1f}%")
+                      f"Combustible: {data['fuel_level']}%")
 
             # Respetar la frecuencia de muestreo (evitar ir más rápido que sample_rate)
             time.sleep(sample_interval)
